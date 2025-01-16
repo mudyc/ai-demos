@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ristinolla Tunnistus</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+        #canvas, #d3-canvas {
+            border: 1px solid black;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Piirrä X tai O 5x5-ruudukkoon</h1>
+    <canvas id="canvas" width="250" height="250"></canvas>
+    <br>
+    <button onclick="clearCanvas()">Tyhjennä</button>
+    <button onclick="predict()">Tee ennustus</button>
+    <h2>Ennustus: <span id="prediction">Ei ennustettu</span></h2>
+
+    <h2>Neuroverkon Visualisointi</h2>
+    <svg id="d3-canvas" width="600" height="400"></svg>
+
+    <script>
+        // Canvas setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const predictionElement = document.getElementById('prediction');
+
+        const cellSize = 50;
+        let drawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        canvas.addEventListener('mousedown', (e) => {
+            drawing = true;
+            [lastX, lastY] = [e.offsetX, e.offsetY];
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (drawing) {
+                const x = e.offsetX;
+                const y = e.offsetY;
+
+                ctx.beginPath();
+                ctx.moveTo(lastX, lastY);
+                ctx.lineTo(x, y);
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 25;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+
+                lastX = x;
+                lastY = y;
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            drawing = false;
+        });
+
+        // Clear canvas
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            predictionElement.textContent = 'Ei ennustettu';
+        }
+
+        // Preprocess the canvas for model input
+        function preprocessCanvas() {
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const pixels = imageData.data;
+            const grid = [];
+            for (let row = 0; row < 5; row++) {
+                const rowArray = [];
+                for (let col = 0; col < 5; col++) {
+                    const x = col * cellSize + 25;
+                    const y = row * cellSize + 25;
+                    const pixelIndex = (y * canvas.width + x) * 4;
+                    const r = pixels[pixelIndex];
+                    const g = pixels[pixelIndex + 1];
+                    const b = pixels[pixelIndex + 2];
+                    const a = pixels[pixelIndex + 3];
+                    //console.log(r,g,b,a)
+                    const avg = a //(r + g + b) / 3;
+                    rowArray.push(avg > 200 ? 1 : 0);  // 1 for black, 0 for white
+                }
+                grid.push(rowArray);
+                console.log(rowArray)
+            }
+            return grid.flat();
+        }
+
+        // Load or train a basic model to classify X or O
+        async function loadModel() {
+            const model = tf.sequential();
+            model.add(tf.layers.dense({inputShape: [5*5], units: 16, activation: 'relu'}));
+            //model.add(tf.layers.flatten());
+            model.add(tf.layers.dense({units: 1, activation: 'sigmoid'}));
+            model.compile({optimizer: 'adam', loss: 'binaryCrossentropy', metrics: ['accuracy']});
+
+            // Training process
+            // Generate more training data
+            const xs = tf.tensor([
+                [
+                    [1, 0, 0, 0, 1],
+                    [0, 1, 0, 1, 0],
+                    [0, 0, 1, 0, 0],
+                    [0, 1, 0, 1, 0],
+                    [1, 0, 0, 0, 1]
+                ],
+                [
+                    [0, 1, 1, 1, 0],
+                    [1, 0, 0, 0, 1],
+                    [1, 0, 0, 0, 1],
+                    [1, 0, 0, 0, 1],
+                    [0, 1, 1, 1, 0]
+                ],
+                [
+                    [0, 0, 1, 0, 0],
+                    [0, 0, 1, 0, 0],
+                    [1, 1, 1, 1, 1],
+                    [0, 0, 1, 0, 0],
+                    [0, 0, 1, 0, 0]
+                ],
+                [
+                    [0, 0, 0, 0, 0],
+                    [0, 1, 1, 1, 0],
+                    [0, 1, 0, 1, 0],
+                    [0, 1, 1, 1, 0],
+                    [0, 0, 0, 0, 0]
+                ],
+                [
+                    [0, 0, 0, 0, 0],
+                    [0, 1, 0, 1, 0],
+                    [0, 0, 1, 0, 0],
+                    [0, 1, 0, 1, 0],
+                    [0, 0, 0, 0, 0]
+                ],
+                [
+                    [0, 0, 0, 0, 0],
+                    [0, 0, 1, 0, 0],
+                    [0, 1, 0, 1, 0],
+                    [0, 0, 1, 0, 0],
+                    [0, 0, 0, 0, 0]
+                ]
+            ]);
+            // Reshape xs to have the correct shape: [5, 25] for training
+            const reshapedXs = xs.reshape([6, 25]);  // Reshaping from [5, 5, 5] to [5, 25]
+
+            const ys = tf.tensor([[1], [0], [1], [0], [1], [0]]); 
+            await model.fit(reshapedXs, ys, {epochs: 20});
+
+            return model;
+        }
+
+        let model;
+
+        loadModel().then(loadedModel => {
+            model = loadedModel;
+            visualizeNeuralNetwork(model)
+        });
+
+        // Predict based on the canvas drawing
+        async function predict() {
+            if (!model) return;
+
+            const grid = preprocessCanvas();
+            visualizeNeuralNetwork(model, grid)
+            const inputTensor = tf.tensor([grid]);
+            const prediction = model.predict(inputTensor);
+            console.log(prediction)
+            prediction.array().then((pred) => {
+                const result = pred[0] > 0.5 ? 'X' : 'O';
+                console.log(pred[0], '=>', result)
+                predictionElement.textContent = result;
+            });
+        }
+
+        function visualizeNeuralNetwork(model, input=undefined) {
+            const svg = d3.select("#d3-canvas");
+            svg.selectAll("*").remove()
+            const width = svg.attr("width");
+            const height = svg.attr("height");
+
+            const layerData = [
+                { id: 0, neurons: 25 }, // Input layer (5x5 grid)
+                { id: 1, neurons: 16 }, // Hidden layer
+                { id: 2, neurons: 1 } // Output layer
+            ];
+
+            // Set up the layout for layers
+            const layerWidth = width / 3;
+            const layerHeight = height;
+
+            const scaleX = d3.scaleLinear()
+                .domain([0, 1])
+                .range([0, layerWidth]);
+
+            const scaleY = d3.scaleLinear()
+                .domain([0, 1])
+                .range([0, layerHeight]);
+
+            // Draw layers
+            const points = {}
+
+            // Calculate activations
+            const activations = [input]
+            if (input) {
+                let currentActivation = tf.tensor(input).reshape([1, 5*5]);
+                for (const layer of model.layers) {
+                    currentActivation = layer.apply(currentActivation);
+                    activations.push(currentActivation.arraySync()[0]);
+                }
+                console.log(activations)
+            }
+
+            layerData.forEach((layer, i) => {
+                const layerGroup = svg.append("g")
+                    .attr("transform", `translate(${layerWidth * i}, 0)`);
+                const neurons = layerGroup.selectAll(".neuron")
+                    .data(new Array(layer.neurons))
+                    .enter()
+                    .append("circle")
+                    .attr("class", "neuron")
+                    .attr("cx", layerWidth / 2)
+                    .attr("cy", (d, ii) => {
+                        const x = layerWidth * i + (layerWidth / 2)
+                        const y = scaleY((1+ii) / (2+layer.neurons))
+                        points[`${i}:${ii}`] = [x,parseFloat(y)]
+                        return y
+                    })
+                    .attr("r", 4.5)
+                    .style("fill", (d, ii) => {
+                        if (!input) return 'lightblue'
+                        const activation = activations[i][ii] || 0;
+                        const colorValue = Math.round(activation * 255);
+                        return `rgba(${colorValue}, ${colorValue}, 0, 1)`
+                    })
+            })
+
+            const links = []
+            for (let l=0; l<layerData.length-1; l++) {
+                function range(size) {
+                    return [...Array(size).keys()];
+                }
+                //console.log(l, model, model.getWeights())
+                //console.log(model.layers[l].getWeights())
+                const weights = model.layers[l].getWeights()[0].arraySync()
+                //console.log(weights)
+                for (const i of range(layerData[l].neurons)) {
+                    for (const j of range(layerData[l+1].neurons)) {
+                        const a = points[`${l}:${i}`]
+                        const b = points[`${l+1}:${j}`]
+                        const w = weights[i]
+                        links.push([a,b,w])
+                    }
+                }
+            }
+            //console.log(links, points)
+            const connectionData = svg.selectAll(".connection")
+                .data(links)
+                .enter()
+                .append("line")
+                .attr("class", "connection")
+                .attr("x1", (d) => d[0][0])
+                .attr("y1", (d) => d[0][1])
+                .attr("x2", (d) => d[1][0])
+                .attr("y2", (d) => d[1][1])
+                .style("stroke", (d) => {
+                    const weight = d[2][0]
+                    //return weight > 0 ? "red" : "blue";
+                    const red = Math.round(((weight + 1) / 2) * 255);  // Map weight to red [0, 255]
+                    const blue = Math.round(((1 - weight) / 2) * 255); // Map weight to blue [0, 255]
+                    return `rgba(${red}, 0, ${blue}, 1)`; // Use rgba for color
+                })
+                .style("stroke-width", 0.5);
+            }
+    </script>
+
+</body>
+</html>
