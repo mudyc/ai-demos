@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ping Pong with Reinforcement Learning</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 0; }
+        canvas { display: block; margin: 0 auto; background: #000; }
+        #scores { margin-top: 10px; font-size: 20px; }
+    </style>
+</head>
+<body>
+    <div id="scores">Player 1: 0 | Player 2: 0</div>
+    <div><label><input id="draw" type="checkbox" checked /> draw</label></div>
+    <canvas id="gameCanvas" width="400" height="300"></canvas>
+    <canvas id="weightsCanvas" width="400" height="300"></canvas>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        let drawGame = document.getElementById('draw').checked
+
+        // Game Constants
+        const paddleHeight = 50;
+        const paddleWidth = 10;
+        const ballSize = 8;
+        const moveStep = 5; // Paddle movement per step
+        const ballSpeed = 4;
+
+        // Player Variables
+        let player1Y = canvas.height / 2 - paddleHeight / 2;
+        let player2Y = canvas.height / 2 - paddleHeight / 2;
+        let ballX = canvas.width / 2;
+        let ballY = canvas.height / 2;
+        let ballDirX = -1; // Ball moving left or right (-1 or 1)
+        let ballDirY = 1; // Ball moving up or down (-1 or 1)
+        let player1Score = 0;
+        let player2Score = 0;
+
+        // Model and Training Variables
+        const model = tf.sequential();
+        model.add(tf.layers.dense({ units: 8, inputShape: [4], activation: "relu" }));
+        model.add(tf.layers.dense({ units: 1, activation: "sigmoid" })); // Output is between 0 and 1
+        model.compile({ optimizer: "adam", loss: "meanSquaredError" });
+
+        const maxHistory = 250;
+        let player1History = [];
+        let player2History = [];
+
+        function addToHistory(history, state, action) {
+            history.push({ state, action });
+            if (history.length > maxHistory) {
+                history.shift();
+            }
+        }
+
+        // Helper Functions
+        function sigmoidToAction(output) {
+            return output > 0.5 ? 1 : -1; // 1: move down, -1: move up
+        }
+
+        function resetBall(winner) {
+            ballX = canvas.width / 2;
+            ballY = canvas.height / 2;
+            ballDirX = winner === 1 ? -1 : 1; // Winner controls initial ball direction
+            ballDirY = Math.random() < 0.5 ? -1 : 1; // Random vertical direction
+            player1Y = canvas.height / 2 - paddleHeight / 2;
+            player2Y = canvas.height / 2 - paddleHeight / 2;
+            trainWithHistory(winner)
+            drawWeights()
+        }
+
+        function applyRewards(history, baseReward) {
+            const steps = history.length;
+            return history.map((_, i) => baseReward * ((i + 1) / steps));
+        }
+
+        async function trainWithHistory(winner) {
+            const p1States = player1History.map(item => item.state);
+            const p1Rewards = applyRewards(player1History, winner===1?1:-1);
+            const p2States = player2History.map(item => item.state);
+            const p2Rewards = applyRewards(player2History, winner===2?1:-1);
+
+            const allStates = [...p1States, ...p2States];
+            const allRewards = [...p1Rewards, ...p2Rewards];
+
+            if (allStates.length > 0) {
+                const stateTensor = tf.tensor2d(allStates);
+                const rewardTensor = tf.tensor1d(allRewards);
+                await model.fit(stateTensor, rewardTensor, { epochs: 10 });
+            }
+
+            player1History = [];
+            player2History = [];
+        }
+
+        function updateScores() {
+            document.getElementById("scores").textContent = `Player 1: ${player1Score} | Player 2: ${player2Score}`;
+        }
+
+        // Game Loop
+        async function gameLoop() {
+            // Create state tensors
+            const player1State = [player1Y / canvas.height, player2Y / canvas.height, ballX / canvas.width, ballY / canvas.height];
+            const player2State = [player2Y / canvas.height, player1Y / canvas.height, 1 - ballX / canvas.width, ballY / canvas.height];
+
+            const player1Prediction = await model.predict(tf.tensor([player1State])).array();
+            const player2Prediction = await model.predict(tf.tensor([player2State])).array();
+
+            const player1Move = sigmoidToAction(player1Prediction[0][0]);
+            const player2Move = sigmoidToAction(player2Prediction[0][0]);
+
+            // Update paddles
+            player1Y += player1Move * moveStep;
+            player2Y += player2Move * moveStep;
+
+            // Constrain paddles within canvas
+            player1Y = Math.max(0, Math.min(canvas.height - paddleHeight, player1Y));
+            player2Y = Math.max(0, Math.min(canvas.height - paddleHeight, player2Y));
+
+            // Update ball position
+            ballX += ballDirX * ballSpeed;
+            ballY += ballDirY * ballSpeed;
+
+            // Ball collision with walls
+            if (ballY <= 0 || ballY >= canvas.height - ballSize) {
+                ballDirY = -ballDirY;
+            }
+
+            // Ball collision with paddles
+            if (ballX <= paddleWidth && ballY > player1Y && ballY < player1Y + paddleHeight) {
+                ballDirX = -ballDirX;
+            } else if (ballX >= canvas.width - paddleWidth - ballSize && ballY > player2Y && ballY < player2Y + paddleHeight) {
+                ballDirX = -ballDirX;
+            }
+            addToHistory(player1History, player1State, Math.sign(player1Prediction));
+            addToHistory(player2History, player2State, Math.sign(player2Prediction));
+
+            // Ball out of bounds
+            if (ballX < 0) {
+                player2Score++;
+                resetBall(2);
+                updateScores();
+            } else if (ballX > canvas.width) {
+                player1Score++;
+                resetBall(1);
+                updateScores();
+            }
+        }
+        function draw() {
+            // Draw game
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!drawGame) return
+            ctx.fillStyle = "white";
+
+            // Player paddles
+            ctx.fillRect(0, player1Y, paddleWidth, paddleHeight);
+            ctx.fillRect(canvas.width - paddleWidth, player2Y, paddleWidth, paddleHeight);
+
+            // Ball
+            ctx.fillRect(ballX, ballY, ballSize, ballSize);
+            requestAnimationFrame(draw);
+        }
+
+        function drawWeights() {
+            const canvas = document.getElementById("weightsCanvas");
+            const weightsCtx = canvas.getContext("2d");
+
+            weightsCtx.clearRect(0, 0, weightsCanvas.width, weightsCanvas.height);
+
+            const weights = model.layers[0].getWeights()[0].arraySync();
+            const cols = weights[0].length;
+            const rows = weights.length;
+
+            const cellWidth = weightsCanvas.width / cols;
+            const cellHeight = weightsCanvas.height / rows;
+
+            for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                    const weight = weights[row][col];
+
+                    // Map weight to color
+                    const red = Math.min(255, Math.max(0, Math.round((weight < 0 ? 1+weight : 1) * 255)));
+                    const blue = Math.min(255, Math.max(0, Math.round((weight < 0 ? 1 : 0) * 255)));
+                    const green = Math.min(255, Math.max(0, Math.round((Math.abs(weight) * (weight > 0 ? 1 : 0)) * 255)));
+
+
+                    weightsCtx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+                    weightsCtx.fillRect(col * cellWidth, row * cellHeight, cellWidth, cellHeight);
+                }
+            }
+        }
+
+        // Start game
+        updateScores();
+        resetBall(1);
+        draw()
+
+        document.getElementById("draw").addEventListener('change', (ev) => {
+            console.log(ev)
+            drawGame = ev.target.checked
+            draw()
+        })
+
+        async function loop(func, ms) {
+            const start = performance.now();
+            do {
+                await func()
+            }            
+            while (performance.now() - start < ms)
+
+            setTimeout(() => loop(func, drawGame?50:500), 0);
+        }
+
+        loop(gameLoop, 500)
+    </script>
+</body>
+</html>
