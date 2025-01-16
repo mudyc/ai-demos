@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tekoäly Äänentunnistus</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/knn-classifier"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+        }
+        #visualizer {
+            width: 100%;
+            height: 150px;
+            background: #f3f3f3;
+            margin: 20px 0;
+            border: 1px solid #ccc;
+        }
+        button {
+            margin: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Äänentunnistus</h1>
+    <p>Opeta tekoälyä tunnistamaan "A"-äänne ja katso, kun se tunnistaa sen!</p>
+
+    <button id="train-button">Opeta "A"</button>
+    <button id="listen-button">Aloita Tunnistus</button>
+    <canvas id="visualizer"></canvas>
+    <p id="result">Tulos: -</p>
+
+    <script>
+        const classifier = knnClassifier.create();
+        const recognizer = speechCommands.create('BROWSER_FFT');
+        const canvas = document.getElementById('visualizer');
+        const resultElement = document.getElementById('result');
+        const ctx = canvas.getContext('2d');
+
+        let isListening = false;
+
+        // Initialize the recognizer
+        recognizer.ensureModelLoaded().then(() => {
+            console.log('Speech recognizer ready.');
+        });
+
+        // Visualizer function
+        function drawVisualizer(dataArray) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#4caf50';
+            const barWidth = canvas.width / dataArray.length;
+            dataArray.forEach((value, index) => {
+                const barHeight = value * canvas.height;
+                ctx.fillRect(index * barWidth, canvas.height - barHeight, barWidth, barHeight);
+            });
+        }
+
+        // Train with "A"
+        document.getElementById('train-button').addEventListener('click', async () => {
+            const microphone = await recognizer.listen(result => {
+                const scores = result.spectrogram.data;
+                drawVisualizer(scores.slice(0, 50));
+
+                classifier.addExample(tf.tensor(scores), 0); // Label 0 for "A"
+            }, { probabilityThreshold: 0.8 });
+
+            setTimeout(() => {
+                recognizer.stopListening();
+                alert('"A" opetus valmis!');
+            }, 5000); // Stop listening after 5 seconds
+        });
+
+        // Start listening
+        document.getElementById('listen-button').addEventListener('click', async () => {
+            if (isListening) return;
+            isListening = true;
+
+            recognizer.listen(result => {
+                const scores = result.spectrogram.data;
+                drawVisualizer(scores.slice(0, 50));
+
+                const tensor = tf.tensor(scores);
+                classifier.predictClass(tensor).then(prediction => {
+                    if (prediction.label === '0') {
+                        resultElement.textContent = 'Tulos: A';
+                    } else {
+                        resultElement.textContent = 'Tulos: -';
+                    }
+                });
+            }, { probabilityThreshold: 0.8 });
+        });
+    </script>
+</body>
+</html>
