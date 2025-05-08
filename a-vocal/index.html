@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live "A" Sound Recognizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <style>
+    canvas { border: 1px solid #ccc; margin-top: 10px; display: block; }
+    button { margin: 5px; }
+    #result { font-size: 1.2em; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Live AI "A" Recognizer</h2>
+  <button onclick="initAudio()">🎙 Start Microphone</button>
+  <button onclick="recordASample()">🔴 Record 'A'</button>
+  <button onclick="recordNotASample()">⚫ Record 'Not A'</button>
+  <button onclick="trainModel()">🧠 Train Model</button>
+  <div id="result">Waiting...</div>
+  <canvas id="waveform" width="600" height="100"></canvas>
+  <canvas id="timeline" width="600" height="20"></canvas>
+
+  <script>
+    const SAMPLE_SIZE = 1024;
+    const RECORD_DURATION_FRAMES = 43; // ~1 second of audio
+    const OVERLAP_STEP = 256; // for slicing
+
+    let audioCtx, analyser, micStream, processor, dataArray;
+    let aSamples = [], notASamples = [];
+    let isRecording = false, recordingTimer = 0;
+    let bufferChunks = [], recordingLabel = null;
+    let model = null;
+    let predictionHistory = new Array(200).fill(0);
+
+    const canvas = document.getElementById("waveform");
+    const ctx = canvas.getContext("2d");
+    const timelineCanvas = document.getElementById("timeline");
+    const timelineCtx = timelineCanvas.getContext("2d");
+    const resultElem = document.getElementById("result");
+
+    async function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        alert("Mic access denied: " + err.message);
+        return;
+      }
+
+      const source = audioCtx.createMediaStreamSource(micStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = SAMPLE_SIZE * 2;
+      dataArray = new Float32Array(SAMPLE_SIZE);
+      processor = audioCtx.createScriptProcessor(SAMPLE_SIZE, 1, 1);
+      source.connect(analyser);
+      analyser.connect(processor);
+      processor.connect(audioCtx.destination);
+      processor.onaudioprocess = onAudioProcess;
+    }
+
+    function onAudioProcess() {
+      analyser.getFloatTimeDomainData(dataArray);
+      drawWaveform(dataArray, isRecording);
+
+      if (isRecording) {
+        bufferChunks.push(Array.from(dataArray));
+        recordingTimer--;
+        if (recordingTimer <= 0) {
+          const fullSample = bufferChunks.flat();
+          if (recordingLabel === 'A') {
+            aSamples.push(fullSample);
+            resultElem.textContent = 'Sample Recorded: A';
+          } else if (recordingLabel === 'notA') {
+            notASamples.push(fullSample);
+            resultElem.textContent = 'Sample Recorded: Not A';
+          }
+          isRecording = false;
+          bufferChunks = [];
+        }
+      }
+
+      if (!isRecording && model) {
+        const input = tf.tensor2d([Array.from(dataArray)], [1, SAMPLE_SIZE]);
+        const prediction = model.predict(input);
+        prediction.data().then(p => {
+          const prob = p[0];
+          const isA = prob > 0.5;
+          resultElem.textContent = isA ? `"A" (${prob.toFixed(2)})` : `Not A (${prob.toFixed(2)})`;
+          predictionHistory.push(isA ? 1 : 0);
+          if (predictionHistory.length > 200) predictionHistory.shift();
+          drawTimeline();
+          input.dispose();
+          prediction.dispose();
+        });
+      }
+    }
+
+    function drawWaveform(data, highlight = false) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.beginPath();
+      ctx.strokeStyle = highlight ? 'red' : 'black';
+      const step = canvas.width / data.length;
+      for (let i = 0; i < data.length; i++) {
+        const x = i * step;
+        const y = (0.5 - data[i] / 2) * canvas.height;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function drawTimeline() {
+      timelineCtx.clearRect(0, 0, timelineCanvas.width, timelineCanvas.height);
+      const w = timelineCanvas.width / predictionHistory.length;
+      for (let i = 0; i < predictionHistory.length; i++) {
+        timelineCtx.fillStyle = predictionHistory[i] === 1 ? 'limegreen' : 'black';
+        timelineCtx.fillRect(i * w, 0, w, timelineCanvas.height);
+      }
+    }
+
+    function recordASample() {
+      isRecording = true;
+      bufferChunks = [];
+      recordingTimer = RECORD_DURATION_FRAMES;
+      recordingLabel = 'A';
+      resultElem.textContent = 'Recording "A"...';
+    }
+
+    function recordNotASample() {
+      isRecording = true;
+      bufferChunks = [];
+      recordingTimer = RECORD_DURATION_FRAMES;
+      recordingLabel = 'notA';
+      resultElem.textContent = 'Recording "Not A"...';
+    }
+
+    function expandSamples(samples, label) {
+      const windows = [];
+      samples.forEach(sample => {
+        for (let i = 0; i + SAMPLE_SIZE <= sample.length; i += OVERLAP_STEP) {
+          const window = sample.slice(i, i + SAMPLE_SIZE);
+          windows.push({ x: window, y: label });
+        }
+      });
+      return windows;
+    }
+
+    async function trainModel() {
+      if (aSamples.length === 0 || notASamples.length === 0) {
+        alert("Please record both 'A' and 'Not A' samples.");
+        return;
+      }
+
+      const aWindows = expandSamples(aSamples, 1);
+      const notAWindows = expandSamples(notASamples, 0);
+      const all = aWindows.concat(notAWindows);
+
+      const xs = tf.tensor2d(all.map(s => s.x));
+      const ys = tf.tensor2d(all.map(s => [s.y]));
+
+      model = tf.sequential();
+      model.add(tf.layers.dense({ inputShape: [SAMPLE_SIZE], units: 32, activation: 'relu' }));
+      model.add(tf.layers.dense({ units: 1, activation: 'sigmoid' }));
+      model.compile({ loss: 'binaryCrossentropy', optimizer: 'adam', metrics: ['accuracy'] });
+
+      await model.fit(xs, ys, {
+        epochs: 15,
+        shuffle: true,
+        callbacks: {
+          onEpochEnd: (epoch, logs) => {
+            console.log(`Epoch ${epoch + 1}: loss=${logs.loss.toFixed(4)}`);
+          }
+        }
+      });
+
+      xs.dispose();
+      ys.dispose();
+      resultElem.textContent = 'Training complete!';
+    }
+  </script>
+</body>
+</html>
